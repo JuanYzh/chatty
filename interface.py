@@ -11,7 +11,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QDialog, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, \
     QPushButton, QSpacerItem, QSizePolicy
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
-from PyQt5.QtCore import QModelIndex
+from PyQt5.QtCore import QModelIndex, QThread, pyqtSignal
+import time
 from chatty_ux_main import Ui_MainWindow
 from new_chat_setting import Ui_Dialog_NewChat
 from gpt_requests import gpt_rob
@@ -22,6 +23,23 @@ class Utils:
     creative = 5
     scenario = "You are a helpful assistant, you call yourself Chatty."
     message = []
+
+
+class MyThread(QtCore.QThread):
+    result_ready = QtCore.pyqtSignal(object)
+
+    def __init__(self, thread_request, **kwargs):
+        super().__init__()
+        self.thread_request = thread_request
+        self.kwargs = kwargs
+
+    def run(self):
+        if self.thread_request == "openai_requests":
+            chat_setting = self.kwargs.get("chat_setting")
+            message = self.kwargs.get("chat_setting").get("message")
+            title = self.kwargs.get("title")
+            result = gpt_rob.openai_requests(chat_setting, message)
+        self.result_ready.emit([result, title])
 
 
 class CustomDialog(QDialog, Ui_Dialog_NewChat):
@@ -37,13 +55,11 @@ class ChatUxMain(QMainWindow, Ui_MainWindow):
         super().__init__()
         super().setupUi(self)
         super().retranslateUi(self)
+        # default param
+        self.du_title = "du: "
+        self.assistant_title = "Chatty: "
+        self.now_title = None
         self.last_send = None
-        self.chat_setting = {
-            "title":"",
-            "model": Utils.model[0],
-            "creative": Utils.creative,
-            "scenario": Utils.scenario
-        }
         self.chat_map = {}
         self.add_widgets()
         self.buttons_actions()
@@ -60,6 +76,13 @@ class ChatUxMain(QMainWindow, Ui_MainWindow):
         self.textEdit_dialogue
         self.textEdit_user
         self.statusbar
+        # thread setting
+        self.thread_openai = None
+
+    def closeEvent(self, event):
+        if self.thread_openai:
+            self.thread_openai.wait()
+        event.accept()
 
     def add_widgets(self):
         self._translate = QtCore.QCoreApplication.translate
@@ -158,18 +181,13 @@ class ChatUxMain(QMainWindow, Ui_MainWindow):
                 if index >= 100:
                     return
             title = temp_title
+            self.now_title = title
             scenario = self.window_new_chat.textEdit_scenario.toPlainText()
             model = self.window_new_chat.comboBox_module.itemText(0)
             creative = self.window_new_chat.horizontalSlider_creative.value()
             if not scenario:
                 scenario = "You are a helpful assistant, you call yourself Chatty."
                 print(title)
-            self.chat_setting = {
-                "title":title,
-                "model":model,
-                "creative":creative,
-                "scenario":scenario
-            }
             self.chat_map.update({title:{
                 "model":model,
                 "creative":creative,
@@ -178,9 +196,13 @@ class ChatUxMain(QMainWindow, Ui_MainWindow):
             }})
             item_text = "{item}".format(index=(self.model.rowCount() + 1), item=title)
             item = QStandardItem(item_text)
+            item.setToolTip(f"model: {model}\ncreative: {creative}\nscenario: {scenario}")
             self.model.appendRow(item)
             if self.tab_page.isHidden():
                 self.tab_page.setHidden(False)
+            self.textEdit_dialogue.setText("")
+            self.pushButton_regenerate.setVisible(False)
+            self.textEdit_user.setReadOnly(False)
         else:
             print("Dialog result: Rejected")
 
@@ -189,7 +211,12 @@ class ChatUxMain(QMainWindow, Ui_MainWindow):
         item_text = index.data()
         if self.tab_page.isHidden():
             self.tab_page.setHidden(False)
-
+        self.now_title = item_text
+        self.textEdit_dialogue.setText("")
+        for message in self.chat_map.get(self.now_title).get("message"):
+            chat_title = self.du_title if message.get("role") == 'user' else self.assistant_title
+            self.textEdit_dialogue.append(chat_title + message.get("content") + "\n")
+        self.pushButton_regenerate.setVisible(False)
         print(self.chat_map)
         print("Clicked item: ", item_text)
 
@@ -201,51 +228,86 @@ class ChatUxMain(QMainWindow, Ui_MainWindow):
                 return
             creative += 1
             self.label_creative.setText(str(creative))
-            self.chat_setting.update({"creative":creative})
+            self.chat_map.get(self.now_title).update({"creative":creative})
         else:
             print("-")
             if creative <= 0:
                 return
             creative -= 1
             self.label_creative.setText(str(creative))
-            self.chat_setting.update({"creative": creative})
+            self.chat_map.get(self.now_title).update({"creative": creative})
 
     def edit_chat(self):
         print("pop out edit window")
 
     def clearn_histories(self):
         print("clean this conversasion")
+        self.chat_map.get(self.now_title)["message"] = []
+        self.textEdit_dialogue.setText("")
+        self.pushButton_regenerate.setVisible(False)
 
     def close_chat(self):
         print("close this conversation")
         self.tab_page.setHidden(not self.tab_page.isHidden())
+        self.now_title = None
 
-    def send(self):
-        toPlainText = self.textEdit_user.toPlainText()
+    def set_reg_stop(self, state="stop"):
+        if not self.pushButton_regenerate.isVisible():
+            self.pushButton_regenerate.setVisible(True)
+        if state == "stop":
+            self.pushButton_regenerate.setText(self._translate("MainWindow", "Stop"))
+            self.pushButton_regenerate.setIcon(self.icon_stop_response)
+            self.textEdit_user.setReadOnly(False)
+        else:
+            self.pushButton_regenerate.setText(self._translate("MainWindow", "Regenerate"))
+            self.pushButton_regenerate.setIcon(self.icon_regenerate)
+
+    def send(self, last_send=None, regenerte=False):
+        if self.thread_openai and not self.thread_openai.isFinished():
+            return
+        if not last_send:
+            toPlainText = self.textEdit_user.toPlainText()
+        else:
+            toPlainText = last_send
         if toPlainText:
             self.last_send = toPlainText
             self.textEdit_user.setText("")
-            self.textEdit_dialogue.insertPlainText("du: " + self.last_send + "\n\n")
-            self.pushButton_regenerate.setText(self._translate("MainWindow", "Regenerate"))
-            self.pushButton_regenerate.setIcon(self.icon_regenerate)
-            if not self.pushButton_regenerate.isVisible():
-                self.pushButton_regenerate.setVisible(True)
-            # gpt_rob.go_to_chat(self.last_send)
-            now_title = self.chat_setting.get("title")
-            message = self.chat_map.get(now_title).get("message")
-            message.append({"role": "user", "content": self.last_send})
-            anser = gpt_rob.openai_requests(self.chat_setting, message)
-            message.append({"role": "assistant", "content": anser})
-            self.textEdit_dialogue.append("Chatty: " + anser + "\n\n")
-        else:
-            self.pushButton_regenerate.setText(self._translate("MainWindow", "Stop respones"))
-            self.pushButton_regenerate.setIcon(self.icon_stop_response)
+            now_title = self.now_title
+            if not regenerte:
+                message = self.chat_map.get(now_title).get("message")
+                message.append({"role": "user", "content": self.last_send})
+                self.textEdit_dialogue.append("du: " + self.last_send + "\n")
+            self.thread_openai = MyThread(
+                thread_request="openai_requests", chat_setting=self.chat_map.get(now_title), title=now_title)
+            self.thread_openai.result_ready.connect(self.receive_respond)
+            self.thread_openai.start()
+            self.set_reg_stop(state="stop")
+            self.textEdit_user.setReadOnly(True)
 
     def regenerate(self, button):
         if button.text() == "Regenerate" and self.last_send:
             print(f"Regenerate: {self.last_send}")
-        elif button.text() == "Stop respones":
+            message = self.chat_map.get(self.now_title).get("message")
+            if not message:
+                return
+            if message[-1].get("role") == "assistant":
+                message.pop()
+            self.set_reg_stop(state="stop")
+            self.send(message[-1].get("content"), regenerte=True)
+        elif button.text() == "Stop":
             print("Stop respones")
+            self.textEdit_user.setReadOnly(False)
+            self.thread_openai.terminate()
+            self.set_reg_stop(state="res")
+
+    def receive_respond(self, result):
+        anser, anser_title = result
+        message = self.chat_map.get(anser_title).get("message")
+        message.append({"role": "assistant", "content": anser})
+        if self.now_title == anser_title:
+            self.textEdit_dialogue.append("Chatty: " + anser + "\n")
+            self.set_reg_stop(state="reg")
+            self.textEdit_user.setReadOnly(False)
 
 
 if __name__ == '__main__':

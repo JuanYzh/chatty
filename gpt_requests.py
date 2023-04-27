@@ -14,16 +14,19 @@ class gpt_rob:
 
     @staticmethod
     def openai_requests(chat_setting, message_history):
-        # Load your API key from an environment variable or secret management service
         # ========================================= chat setting
         model = chat_setting.get("model")
-        creative = chat_setting.get("creative")
+        creative = chat_setting.get("creative") / 10
         scenario = chat_setting.get("scenario")
+        max_tokens = 4000
         # ========================================== message
         message = [{"role": "system", "content": scenario}]
         message.extend(message_history)
-        #{"role": "user", "content": "Who won the world series in 2020?"}]
-        response = openai.ChatCompletion.create(model=model, messages=message)
+        print(model, message)
+        if model in ["gpt-4"]:
+            response = openai.ChatCompletion.create(model=model, messages=message, temperature=creative)
+        else:
+            response = openai.ChatCompletion.create(model=model, messages=message, temperature=creative)
         anser = response.choices[0].message.content
         return anser
 
@@ -31,11 +34,10 @@ class gpt_rob:
     def go_to_chat(self, message):
         pass
 
-
-# a function to convert a json to a csv file
-# rob = gpt_rob()
-# setting = {"model": "gpt-3.5-turbo",
-#     "creative":5,
-#     "scenario":"You are a helpful assistant, you call yourself Chatty."}
-# anser = rob.openai_requests(setting, {"role": "user", "content": "你好"})
-# print(anser)
+if __name__ == '__main__':
+    rob = gpt_rob()
+    setting = {"model": "gpt-4",
+        "creative":10,
+        "scenario":"You are a helpful assistant, you call yourself Chatty."}
+    anser = rob.openai_requests(setting, [{"role": "user", "content": "hello"}])
+    print(anser)
