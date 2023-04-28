@@ -5,7 +5,6 @@
 import sys
 from PyQt5 import QtWidgets
 from interface import ChatUxMain
-from gpt_requests import gpt_rob
 
 
 class chatty:

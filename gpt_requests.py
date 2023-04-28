@@ -2,14 +2,12 @@
 # Copyright (c) 2023 by WenHuan Yang-Zhang.
 # Date: 2023-04
 # Ich und google :)
-
-import os
 import openai
 
 
 class gpt_rob:
-    openai.api_key = "sk-"
-    openai.organization = "org-"
+    openai.api_key = ""
+    openai.organization = "org-rzJhwN05arovldKaFnDqGnt8"
 
 
     @staticmethod
@@ -22,7 +20,6 @@ class gpt_rob:
         # ========================================== message
         message = [{"role": "system", "content": scenario}]
         message.extend(message_history)
-        print(model, message)
         if model in ["gpt-4"]:
             response = openai.ChatCompletion.create(model=model, messages=message, temperature=creative)
         else:
